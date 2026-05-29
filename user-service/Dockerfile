@@ -1,22 +1,34 @@
-# Use slim Python image (smaller, production-safe)
-FROM python:3.11-slim
+# ── Stage 1: Builder ──────────────────────────────
+FROM python:3.11-slim AS builder
 
-# Set working directory inside container
 WORKDIR /app
 
-# Copy and install dependencies first (layer caching optimization)
+# Install dependencies into a temp folder (clean layer)
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
-# Copy application code
+# ── Stage 2: Final Image ──────────────────────────
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Copy only installed packages from builder (no pip cache)
+COPY --from=builder /install /usr/local
+
+# Copy app code
 COPY app.py .
 
-# Create a non-root user (industry security standard)
-RUN adduser --disabled-password --gecos '' appuser
+# Security: non-root user
+RUN addgroup --system appgroup && adduser --system --ingroup appgroup appuser
 USER appuser
 
-# Expose port
 EXPOSE 5001
 
-# Run with gunicorn (production WSGI server, NOT flask dev server)
-CMD ["gunicorn", "--bind", "0.0.0.0:5001", "--workers", "2", "--timeout", "60", "app:app"]
+# Gunicorn: production WSGI server
+# 2 workers per container, timeout 120s
+CMD ["gunicorn", "--bind", "0.0.0.0:5001", \
+     "--workers", "2", \
+     "--timeout", "120", \
+     "--access-logfile", "-", \
+     "--error-logfile", "-", \
+     "app:app"]

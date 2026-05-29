@@ -1,0 +1,7 @@
+# Isolate all ShopCart resources in their own namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: shopcart
+  labels:
+    app: shopcart

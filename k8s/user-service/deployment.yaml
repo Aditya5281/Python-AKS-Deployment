@@ -1,0 +1,51 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: user-service
+  namespace: shopcart
+  labels:
+    app: user-service
+spec:
+  replicas: 2                        # 2 pods for high availability
+  selector:
+    matchLabels:
+      app: user-service
+  strategy:
+    type: RollingUpdate              # Zero-downtime deployments
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: user-service
+    spec:
+      containers:
+        - name: user-service
+          image: shopcartacr.azurecr.io/user-service:v1
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 5001
+          env:
+            - name: FLASK_ENV
+              value: "production"
+          resources:
+            requests:
+              cpu: "100m"           # Minimum CPU guaranteed
+              memory: "128Mi"       # Minimum memory guaranteed
+            limits:
+              cpu: "300m"           # Maximum CPU allowed
+              memory: "256Mi"       # Maximum memory allowed
+          livenessProbe:            # Restart pod if unhealthy
+            httpGet:
+              path: /health
+              port: 5001
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:           # Only send traffic when ready
+            httpGet:
+              path: /health
+              port: 5001
+            initialDelaySeconds: 10
+            periodSeconds: 10
+      restartPolicy: Always
