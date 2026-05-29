@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block content %}
+<h2 class="mb-4">📦 Product Catalog</h2>
+{% if products %}
+  <div class="row">
+    {% for p in products %}
+    <div class="col-md-3 mb-4">
+      <div class="card p-3 h-100">
+        <h5 class="fw-bold">{{ p.name }}</h5>
+        <p class="text-muted small">{{ p.description }}</p>
+        <div class="mt-auto">
+          <span class="badge bg-success fs-6">${{ "%.2f"|format(p.price) }}</span>
+          <span class="badge bg-secondary ms-2">Stock: {{ p.stock }}</span>
+        </div>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+{% else %}
+  <div class="alert alert-warning">No products found or Product Service is down.</div>
+{% endif %}
+{% endblock %}

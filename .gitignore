@@ -1,0 +1,15 @@
+# Python cache
+__pycache__/
+*.pyc
+
+# Virtual environments
+/user-service/venv/
+/product-service/venv/
+/frontend-service/venv/
+.venv/
+
+# VS Code
+.vscode/
+
+# Environment variables
+.env
