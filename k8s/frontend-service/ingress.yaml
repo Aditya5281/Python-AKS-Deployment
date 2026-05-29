@@ -7,9 +7,6 @@ metadata:
     # Tells K8s to use Azure App Gateway Ingress Controller
     kubernetes.io/ingress.class: azure/application-gateway
 
-    # WAF: use your custom WAF policy (created separately)
-    appgw.ingress.kubernetes.io/waf-policy-for-path: /subscriptions/YOUR_SUB_ID/resourceGroups/shopcart-rg/providers/Microsoft.Network/applicationGatewayWebApplicationFirewallPolicies/shopcart-waf-policy
-
     # SSL redirect: HTTP → HTTPS
     appgw.ingress.kubernetes.io/ssl-redirect: "true"
 
