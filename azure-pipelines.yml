@@ -1,0 +1,334 @@
+trigger:
+  - none
+
+# ── Pipeline-level variables ──────────────────────────────
+variables:
+  ACR_LOGIN_SERVER: "shopcartacr.azurecr.io"
+  AKS_CLUSTER:      "shopcart-aks"
+  RESOURCE_GROUP:   "shopcart-rg"
+  K8S_NAMESPACE:    "shopcart"
+  IMAGE_TAG:        "$(Build.BuildId)"    # Unique tag per build e.g. "42"
+  DOCKER_BUILDKIT:  "1"                   # Faster Docker builds
+
+# ── Stages ────────────────────────────────────────────────
+stages:
+
+# ═══════════════════════════════════════════
+# STAGE 1: CI — Build & Test
+# ═══════════════════════════════════════════
+- stage: CI
+  displayName: "Build & Test"
+  jobs:
+
+  # ── Job: Test all 3 services ─────────────
+  - job: Test
+    displayName: "Run Unit Tests"
+    pool:
+      vmImage: "ubuntu-latest"
+    steps:
+
+      - task: UsePythonVersion@0
+        inputs:
+          versionSpec: "3.11"
+        displayName: "Set Python 3.11"
+
+      # Test User Service
+      - script: |
+          cd user-service
+          pip install -r requirements.txt
+          pip install pytest pytest-cov
+          # Run tests (we'll add test files later)
+          # pytest tests/ --cov=app --cov-report=xml
+          python -c "import app; print('User service imports OK')"
+        displayName: "Test User Service"
+
+      # Test Product Service
+      - script: |
+          cd product-service
+          pip install -r requirements.txt
+          python -c "import app; print('Product service imports OK')"
+        displayName: "Test Product Service"
+
+      # Test Frontend Service
+      - script: |
+          cd frontend-service
+          pip install -r requirements.txt
+          python -c "import app; print('Frontend service imports OK')"
+        displayName: "Test Frontend Service"
+
+  # ── Job: Build & Push Docker Images ──────
+  - job: Build
+    displayName: "Build & Push to ACR"
+    dependsOn: Test           # Only build if tests pass
+    condition: succeeded()
+    pool:
+      vmImage: "ubuntu-latest"
+    steps:
+
+      # Login to ACR
+      - task: Docker@2
+        displayName: "Login to ACR"
+        inputs:
+          command: login
+          containerRegistry: "shopcart-acr-connection"
+
+      # Build & Push User Service
+      - task: Docker@2
+        displayName: "Build & Push user-service"
+        inputs:
+          command: buildAndPush
+          repository: "user-service"
+          containerRegistry: "shopcart-acr-connection"
+          dockerfile: "user-service/Dockerfile"
+          buildContext: "user-service/"
+          tags: |
+            $(IMAGE_TAG)
+            latest
+
+      # Build & Push Product Service
+      - task: Docker@2
+        displayName: "Build & Push product-service"
+        inputs:
+          command: buildAndPush
+          repository: "product-service"
+          containerRegistry: "shopcart-acr-connection"
+          dockerfile: "product-service/Dockerfile"
+          buildContext: "product-service/"
+          tags: |
+            $(IMAGE_TAG)
+            latest
+
+      # Build & Push Frontend Service
+      - task: Docker@2
+        displayName: "Build & Push frontend-service"
+        inputs:
+          command: buildAndPush
+          repository: "frontend-service"
+          containerRegistry: "shopcart-acr-connection"
+          dockerfile: "frontend-service/Dockerfile"
+          buildContext: "frontend-service/"
+          tags: |
+            $(IMAGE_TAG)
+            latest
+
+      # Publish K8s manifests as pipeline artifact
+      # (so CD stage can download and use them)
+      - task: PublishPipelineArtifact@1
+        displayName: "Publish K8s Manifests"
+        inputs:
+          targetPath: "k8s/"
+          artifact: "k8s-manifests"
+
+# ═══════════════════════════════════════════
+# STAGE 2: CD — Deploy to Staging
+# Only runs on 'develop' branch
+# ═══════════════════════════════════════════
+- stage: Deploy_Staging
+  displayName: "🚧 Deploy to Staging"
+  dependsOn: CI
+  condition: |
+    and(
+      succeeded(),
+      eq(variables['Build.SourceBranch'], 'refs/heads/develop')
+    )
+  variables:
+    K8S_NAMESPACE: "shopcart-staging"
+  jobs:
+
+  - deployment: Deploy
+    displayName: "Deploy to Staging AKS"
+    pool:
+      vmImage: "ubuntu-latest"
+    environment: "staging"          # Azure DevOps Environment for approvals
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+
+            # Download manifests from CI stage
+            - task: DownloadPipelineArtifact@2
+              inputs:
+                artifactName: "k8s-manifests"
+                targetPath: "$(Pipeline.Workspace)/k8s"
+
+            # Connect kubectl to AKS
+            - task: KubernetesManifest@1
+              displayName: "Create Namespace (if not exists)"
+              inputs:
+                action: deploy
+                connectionType: azureResourceManager
+                azureSubscriptionConnection: "shopcart-azure-connection"
+                azureResourceGroup: "$(RESOURCE_GROUP)"
+                kubernetesCluster: "$(AKS_CLUSTER)"
+                namespace: "$(K8S_NAMESPACE)"
+                manifests: "$(Pipeline.Workspace)/k8s/namespace.yaml"
+
+            # Replace IMAGE_TAG placeholder in manifests
+            - script: |
+                sed -i "s/\$(IMAGE_TAG)/$(IMAGE_TAG)/g" \
+                  $(Pipeline.Workspace)/k8s/user-service/deployment.yaml
+                sed -i "s/\$(IMAGE_TAG)/$(IMAGE_TAG)/g" \
+                  $(Pipeline.Workspace)/k8s/product-service/deployment.yaml
+                sed -i "s/\$(IMAGE_TAG)/$(IMAGE_TAG)/g" \
+                  $(Pipeline.Workspace)/k8s/frontend-service/deployment.yaml
+              displayName: "Inject Image Tag into Manifests"
+
+            # Deploy all services
+            - task: KubernetesManifest@1
+              displayName: "Deploy User Service"
+              inputs:
+                action: deploy
+                connectionType: azureResourceManager
+                azureSubscriptionConnection: "shopcart-azure-connection"
+                azureResourceGroup: "$(RESOURCE_GROUP)"
+                kubernetesCluster: "$(AKS_CLUSTER)"
+                namespace: "$(K8S_NAMESPACE)"
+                manifests: |
+                  $(Pipeline.Workspace)/k8s/user-service/deployment.yaml
+                  $(Pipeline.Workspace)/k8s/user-service/service.yaml
+
+            - task: KubernetesManifest@1
+              displayName: "Deploy Product Service"
+              inputs:
+                action: deploy
+                connectionType: azureResourceManager
+                azureSubscriptionConnection: "shopcart-azure-connection"
+                azureResourceGroup: "$(RESOURCE_GROUP)"
+                kubernetesCluster: "$(AKS_CLUSTER)"
+                namespace: "$(K8S_NAMESPACE)"
+                manifests: |
+                  $(Pipeline.Workspace)/k8s/product-service/deployment.yaml
+                  $(Pipeline.Workspace)/k8s/product-service/service.yaml
+
+            - task: KubernetesManifest@1
+              displayName: "Deploy Frontend Service + Ingress"
+              inputs:
+                action: deploy
+                connectionType: azureResourceManager
+                azureSubscriptionConnection: "shopcart-azure-connection"
+                azureResourceGroup: "$(RESOURCE_GROUP)"
+                kubernetesCluster: "$(AKS_CLUSTER)"
+                namespace: "$(K8S_NAMESPACE)"
+                manifests: |
+                  $(Pipeline.Workspace)/k8s/frontend-service/deployment.yaml
+                  $(Pipeline.Workspace)/k8s/frontend-service/service.yaml
+                  $(Pipeline.Workspace)/k8s/frontend-service/ingress.yaml
+
+            # Verify rollout succeeded
+            - task: Kubernetes@1
+              displayName: "Verify Deployment Rollout"
+              inputs:
+                connectionType: "Azure Resource Manager"
+                azureSubscriptionEndpoint: "shopcart-azure-connection"
+                azureResourceGroup: "$(RESOURCE_GROUP)"
+                kubernetesCluster: "$(AKS_CLUSTER)"
+                namespace: "$(K8S_NAMESPACE)"
+                command: rollout
+                arguments: >
+                  status deployment/user-service
+                  deployment/product-service
+                  deployment/frontend-service
+                  --timeout=300s
+
+# ═══════════════════════════════════════════
+# STAGE 3: CD — Deploy to Production
+# Only runs on 'main' branch + requires approval
+# ═══════════════════════════════════════════
+- stage: Deploy_Production
+  displayName: "🚀 Deploy to Production"
+  dependsOn: CI
+  condition: |
+    and(
+      succeeded(),
+      eq(variables['Build.SourceBranch'], 'refs/heads/main')
+    )
+  variables:
+    K8S_NAMESPACE: "shopcart"
+  jobs:
+
+  - deployment: Deploy
+    displayName: "Deploy to Production AKS"
+    pool:
+      vmImage: "ubuntu-latest"
+    # 'production' environment has manual approval gate in Azure DevOps
+    environment: "production"
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+
+            - task: DownloadPipelineArtifact@2
+              inputs:
+                artifactName: "k8s-manifests"
+                targetPath: "$(Pipeline.Workspace)/k8s"
+
+            - script: |
+                sed -i "s/\$(IMAGE_TAG)/$(IMAGE_TAG)/g" \
+                  $(Pipeline.Workspace)/k8s/user-service/deployment.yaml
+                sed -i "s/\$(IMAGE_TAG)/$(IMAGE_TAG)/g" \
+                  $(Pipeline.Workspace)/k8s/product-service/deployment.yaml
+                sed -i "s/\$(IMAGE_TAG)/$(IMAGE_TAG)/g" \
+                  $(Pipeline.Workspace)/k8s/frontend-service/deployment.yaml
+              displayName: "Inject Image Tag into Manifests"
+
+            - task: KubernetesManifest@1
+              displayName: "Deploy User Service"
+              inputs:
+                action: deploy
+                connectionType: azureResourceManager
+                azureSubscriptionConnection: "shopcart-azure-connection"
+                azureResourceGroup: "$(RESOURCE_GROUP)"
+                kubernetesCluster: "$(AKS_CLUSTER)"
+                namespace: "$(K8S_NAMESPACE)"
+                manifests: |
+                  $(Pipeline.Workspace)/k8s/user-service/deployment.yaml
+                  $(Pipeline.Workspace)/k8s/user-service/service.yaml
+
+            - task: KubernetesManifest@1
+              displayName: "Deploy Product Service"
+              inputs:
+                action: deploy
+                connectionType: azureResourceManager
+                azureSubscriptionConnection: "shopcart-azure-connection"
+                azureResourceGroup: "$(RESOURCE_GROUP)"
+                kubernetesCluster: "$(AKS_CLUSTER)"
+                namespace: "$(K8S_NAMESPACE)"
+                manifests: |
+                  $(Pipeline.Workspace)/k8s/product-service/deployment.yaml
+                  $(Pipeline.Workspace)/k8s/product-service/service.yaml
+
+            - task: KubernetesManifest@1
+              displayName: "Deploy Frontend + Ingress"
+              inputs:
+                action: deploy
+                connectionType: azureResourceManager
+                azureSubscriptionConnection: "shopcart-azure-connection"
+                azureResourceGroup: "$(RESOURCE_GROUP)"
+                kubernetesCluster: "$(AKS_CLUSTER)"
+                namespace: "$(K8S_NAMESPACE)"
+                manifests: |
+                  $(Pipeline.Workspace)/k8s/frontend-service/deployment.yaml
+                  $(Pipeline.Workspace)/k8s/frontend-service/service.yaml
+                  $(Pipeline.Workspace)/k8s/frontend-service/ingress.yaml
+
+            # Final rollout verification
+            - task: Kubernetes@1
+              displayName: "Verify Production Rollout"
+              inputs:
+                connectionType: "Azure Resource Manager"
+                azureSubscriptionEndpoint: "shopcart-azure-connection"
+                azureResourceGroup: "$(RESOURCE_GROUP)"
+                kubernetesCluster: "$(AKS_CLUSTER)"
+                namespace: "$(K8S_NAMESPACE)"
+                command: rollout
+                arguments: >
+                  status deployment/user-service
+                  deployment/product-service
+                  deployment/frontend-service
+                  --timeout=300s
+
+            # Tag the git commit with build ID for traceability
+            - script: |
+                git tag "release-$(IMAGE_TAG)"
+                git push origin "release-$(IMAGE_TAG)"
+              displayName: "Tag Release in Git"
