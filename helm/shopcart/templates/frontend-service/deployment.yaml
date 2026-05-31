@@ -1,0 +1,67 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Values.frontendService.name }}
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: {{ .Values.frontendService.name }}
+    {{ include "shopcart.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.frontendService.replicaCount }}
+  selector:
+    matchLabels:
+      app: {{ .Values.frontendService.name }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: {{ .Values.frontendService.name }}
+        version: {{ .Values.global.imageTag | quote }}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 2000
+      containers:
+        - name: {{ .Values.frontendService.name }}
+          image: {{ include "shopcart.image" (dict "registry" .Values.global.registry "repo" .Values.frontendService.image.repository "tag" .Values.global.imageTag) }}
+          imagePullPolicy: {{ .Values.frontendService.image.pullPolicy }}
+          ports:
+            - containerPort: {{ .Values.frontendService.port }}
+              name: http
+          env:
+            {{- range $key, $val := .Values.frontendService.env }}
+            - name: {{ $key }}
+              value: {{ $val | quote }}
+            {{- end }}
+          resources:
+            requests:
+              cpu: {{ .Values.frontendService.resources.requests.cpu }}
+              memory: {{ .Values.frontendService.resources.requests.memory }}
+            limits:
+              cpu: {{ .Values.frontendService.resources.limits.cpu }}
+              memory: {{ .Values.frontendService.resources.limits.memory }}
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.frontendService.livenessProbe.path }}
+              port: {{ .Values.frontendService.port }}
+            initialDelaySeconds: {{ .Values.frontendService.livenessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.frontendService.livenessProbe.periodSeconds }}
+            failureThreshold: {{ .Values.frontendService.livenessProbe.failureThreshold }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.frontendService.readinessProbe.path }}
+              port: {{ .Values.frontendService.port }}
+            initialDelaySeconds: {{ .Values.frontendService.readinessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.frontendService.readinessProbe.periodSeconds }}
+            failureThreshold: {{ .Values.frontendService.readinessProbe.failureThreshold }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+      terminationGracePeriodSeconds: 30

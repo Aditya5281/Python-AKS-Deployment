@@ -1,0 +1,67 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Values.userService.name }}
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: {{ .Values.userService.name }}
+    {{ include "shopcart.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.userService.replicaCount }}
+  selector:
+    matchLabels:
+      app: {{ .Values.userService.name }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: {{ .Values.userService.name }}
+        version: {{ .Values.global.imageTag | quote }}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 2000
+      containers:
+        - name: {{ .Values.userService.name }}
+          image: {{ include "shopcart.image" (dict "registry" .Values.global.registry "repo" .Values.userService.image.repository "tag" .Values.global.imageTag) }}
+          imagePullPolicy: {{ .Values.userService.image.pullPolicy }}
+          ports:
+            - containerPort: {{ .Values.userService.port }}
+              name: http
+          env:
+            {{- range $key, $val := .Values.userService.env }}
+            - name: {{ $key }}
+              value: {{ $val | quote }}
+            {{- end }}
+          resources:
+            requests:
+              cpu: {{ .Values.userService.resources.requests.cpu }}
+              memory: {{ .Values.userService.resources.requests.memory }}
+            limits:
+              cpu: {{ .Values.userService.resources.limits.cpu }}
+              memory: {{ .Values.userService.resources.limits.memory }}
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.userService.livenessProbe.path }}
+              port: {{ .Values.userService.port }}
+            initialDelaySeconds: {{ .Values.userService.livenessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.userService.livenessProbe.periodSeconds }}
+            failureThreshold: {{ .Values.userService.livenessProbe.failureThreshold }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.userService.readinessProbe.path }}
+              port: {{ .Values.userService.port }}
+            initialDelaySeconds: {{ .Values.userService.readinessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.userService.readinessProbe.periodSeconds }}
+            failureThreshold: {{ .Values.userService.readinessProbe.failureThreshold }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+      terminationGracePeriodSeconds: 30

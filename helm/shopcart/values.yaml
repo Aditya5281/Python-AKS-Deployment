@@ -1,0 +1,115 @@
+# ─────────────────────────────────────────────
+# Global values shared across all services
+# ─────────────────────────────────────────────
+global:
+  registry: "shopcartacr.azurecr.io"   # ACR login server
+  imageTag: "latest"                    # overridden by pipeline with BUILD ID
+  namespace: "shopcart"
+  environment: "production"
+
+# ─────────────────────────────────────────────
+# User Service
+# ─────────────────────────────────────────────
+userService:
+  name: user-service
+  image:
+    repository: "user-service"
+    pullPolicy: Always
+  replicaCount: 2
+  port: 5001
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+    limits:
+      cpu: "500m"
+      memory: "256Mi"
+  livenessProbe:
+    path: /health
+    initialDelaySeconds: 20
+    periodSeconds: 30
+    failureThreshold: 3
+  readinessProbe:
+    path: /health
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    failureThreshold: 3
+  env:
+    FLASK_ENV: "production"
+
+# ─────────────────────────────────────────────
+# Product Service
+# ─────────────────────────────────────────────
+productService:
+  name: product-service
+  image:
+    repository: "product-service"
+    pullPolicy: Always
+  replicaCount: 2
+  port: 5002
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+    limits:
+      cpu: "500m"
+      memory: "256Mi"
+  livenessProbe:
+    path: /health
+    initialDelaySeconds: 20
+    periodSeconds: 30
+    failureThreshold: 3
+  readinessProbe:
+    path: /health
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    failureThreshold: 3
+  env:
+    FLASK_ENV: "production"
+
+# ─────────────────────────────────────────────
+# Frontend Service
+# ─────────────────────────────────────────────
+frontendService:
+  name: frontend-service
+  image:
+    repository: "frontend-service"
+    pullPolicy: Always
+  replicaCount: 2
+  port: 5000
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+    limits:
+      cpu: "500m"
+      memory: "256Mi"
+  livenessProbe:
+    path: /
+    initialDelaySeconds: 20
+    periodSeconds: 30
+    failureThreshold: 3
+  readinessProbe:
+    path: /
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    failureThreshold: 3
+  env:
+    FLASK_ENV: "production"
+    USER_SERVICE_URL: "http://user-service:5001"
+    PRODUCT_SERVICE_URL: "http://product-service:5002"
+
+# ─────────────────────────────────────────────
+# Ingress (Azure App Gateway)
+# ─────────────────────────────────────────────
+ingress:
+  enabled: true
+  className: "azure/application-gateway"
+  host: "shopcart.yourdomain.com"
+  tlsSecretName: "shopcart-tls-secret"
+  sslRedirect: "true"
+  connectionDraining: "true"
+  connectionDrainingTimeout: "30"
+  cookieAffinity: "true"
+  requestTimeout: "60"
+  wafPolicyId: "/subscriptions/YOUR_SUB_ID/resourceGroups/shopcart-rg/providers/Microsoft.Network/applicationGatewayWebApplicationFirewallPolicies/shopcart-waf-policy"

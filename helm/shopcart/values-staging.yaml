@@ -1,0 +1,27 @@
+# Only override what's DIFFERENT in staging
+# Everything else inherits from values.yaml
+
+global:
+  environment: "staging"
+
+# Fewer replicas in staging to save cost
+userService:
+  replicaCount: 1
+  env:
+    FLASK_ENV: "development"
+
+productService:
+  replicaCount: 1
+  env:
+    FLASK_ENV: "development"
+
+frontendService:
+  replicaCount: 1
+  env:
+    FLASK_ENV: "development"
+    USER_SERVICE_URL: "http://user-service:5001"
+    PRODUCT_SERVICE_URL: "http://product-service:5002"
+
+ingress:
+  host: "staging.shopcart.yourdomain.com"
+  tlsSecretName: "shopcart-staging-tls-secret"

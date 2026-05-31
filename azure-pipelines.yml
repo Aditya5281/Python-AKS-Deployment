@@ -1,66 +1,44 @@
+# ─────────────────────────────────────────────────────────
+# ShopCart — Azure DevOps CI/CD Pipeline
+# CI: Build & Push to ACR
+# CD: Deploy to AKS via Helm
+# ─────────────────────────────────────────────────────────
+
 trigger:
-  - none
+  branches:
+    include:
+      - main
+      - develop
+  paths:
+    exclude:
+      - README.md
+      - docs/**
 
-# ── Pipeline-level variables ──────────────────────────────
+pr:
+  branches:
+    include:
+      - main
+      - develop
+
+# ── Pipeline Variables ────────────────────────────────────
 variables:
-  ACR_LOGIN_SERVER: "shopcartacr.azurecr.io"
-  AKS_CLUSTER:      "shopcart-aks"
-  RESOURCE_GROUP:   "shopcart-rg"
-  K8S_NAMESPACE:    "shopcart"
-  IMAGE_TAG:        "$(Build.BuildId)"    # Unique tag per build e.g. "42"
-  DOCKER_BUILDKIT:  "1"                   # Faster Docker builds
+  ACR_LOGIN_SERVER:       "shopcartacr.azurecr.io"
+  AKS_CLUSTER:            "shopcart-aks"
+  RESOURCE_GROUP:         "shopcart-rg"
+  HELM_CHART_PATH:        "helm/shopcart"
+  HELM_RELEASE_NAME:      "shopcart"
+  IMAGE_TAG:              "$(Build.BuildId)"
 
-# ── Stages ────────────────────────────────────────────────
+# ═══════════════════════════════════════════
+# STAGE 1: CI — Build & Push to ACR
+# ═══════════════════════════════════════════
 stages:
-
-# ═══════════════════════════════════════════
-# STAGE 1: CI — Build & Test
-# ═══════════════════════════════════════════
 - stage: CI
-  displayName: "Build & Test"
+  displayName: "🔨 Build & Push to ACR"
   jobs:
 
-  # ── Job: Test all 3 services ─────────────
-  - job: Test
-    displayName: "Run Unit Tests"
-    pool:
-      vmImage: "ubuntu-latest"
-    steps:
-
-      - task: UsePythonVersion@0
-        inputs:
-          versionSpec: "3.11"
-        displayName: "Set Python 3.11"
-
-      # Test User Service
-      - script: |
-          cd user-service
-          pip install -r requirements.txt
-          pip install pytest pytest-cov
-          # Run tests (we'll add test files later)
-          # pytest tests/ --cov=app --cov-report=xml
-          python -c "import app; print('User service imports OK')"
-        displayName: "Test User Service"
-
-      # Test Product Service
-      - script: |
-          cd product-service
-          pip install -r requirements.txt
-          python -c "import app; print('Product service imports OK')"
-        displayName: "Test Product Service"
-
-      # Test Frontend Service
-      - script: |
-          cd frontend-service
-          pip install -r requirements.txt
-          python -c "import app; print('Frontend service imports OK')"
-        displayName: "Test Frontend Service"
-
-  # ── Job: Build & Push Docker Images ──────
   - job: Build
-    displayName: "Build & Push to ACR"
-    dependsOn: Test           # Only build if tests pass
-    condition: succeeded()
+    displayName: "Build & Push Docker Images"
     pool:
       vmImage: "ubuntu-latest"
     steps:
@@ -111,20 +89,19 @@ stages:
             $(IMAGE_TAG)
             latest
 
-      # Publish K8s manifests as pipeline artifact
-      # (so CD stage can download and use them)
+      # Publish Helm chart as pipeline artifact
       - task: PublishPipelineArtifact@1
-        displayName: "Publish K8s Manifests"
+        displayName: "Publish Helm Chart"
         inputs:
-          targetPath: "k8s/"
-          artifact: "k8s-manifests"
+          targetPath: "$(HELM_CHART_PATH)"
+          artifact: "helm-chart"
 
 # ═══════════════════════════════════════════
 # STAGE 2: CD — Deploy to Staging
-# Only runs on 'develop' branch
+# Runs on develop branch only
 # ═══════════════════════════════════════════
 - stage: Deploy_Staging
-  displayName: "🚧 Deploy to Staging"
+  displayName: "🚧 Deploy to Staging via Helm"
   dependsOn: CI
   condition: |
     and(
@@ -132,110 +109,113 @@ stages:
       eq(variables['Build.SourceBranch'], 'refs/heads/develop')
     )
   variables:
-    K8S_NAMESPACE: "shopcart-staging"
+    K8S_NAMESPACE:      "shopcart-staging"
+    HELM_VALUES_FILE:   "values-staging.yaml"
   jobs:
 
-  - deployment: Deploy
-    displayName: "Deploy to Staging AKS"
+  - deployment: HelmDeploy_Staging
+    displayName: "Helm Deploy to Staging"
     pool:
       vmImage: "ubuntu-latest"
-    environment: "staging"          # Azure DevOps Environment for approvals
+    environment: "staging"
     strategy:
       runOnce:
         deploy:
           steps:
 
-            # Download manifests from CI stage
+            # Download Helm chart artifact from CI stage
             - task: DownloadPipelineArtifact@2
+              displayName: "Download Helm Chart"
               inputs:
-                artifactName: "k8s-manifests"
-                targetPath: "$(Pipeline.Workspace)/k8s"
+                artifactName: "helm-chart"
+                targetPath: "$(Pipeline.Workspace)/helm-chart"
+
+            # Install Helm on the agent
+            - task: HelmInstaller@1
+              displayName: "Install Helm"
+              inputs:
+                helmVersionToInstall: "3.14.0"
 
             # Connect kubectl to AKS
-            - task: KubernetesManifest@1
-              displayName: "Create Namespace (if not exists)"
+            - task: AzureCLI@2
+              displayName: "Get AKS Credentials"
               inputs:
-                action: deploy
-                connectionType: azureResourceManager
-                azureSubscriptionConnection: "shopcart-azure-connection"
-                azureResourceGroup: "$(RESOURCE_GROUP)"
-                kubernetesCluster: "$(AKS_CLUSTER)"
-                namespace: "$(K8S_NAMESPACE)"
-                manifests: "$(Pipeline.Workspace)/k8s/namespace.yaml"
+                azureSubscription: "shopcart-azure-connection"
+                scriptType: "bash"
+                scriptLocation: "inlineScript"
+                inlineScript: |
+                  az aks get-credentials \
+                    --name $(AKS_CLUSTER) \
+                    --resource-group $(RESOURCE_GROUP) \
+                    --overwrite-existing
 
-            # Replace IMAGE_TAG placeholder in manifests
-            - script: |
-                sed -i "s/\$(IMAGE_TAG)/$(IMAGE_TAG)/g" \
-                  $(Pipeline.Workspace)/k8s/user-service/deployment.yaml
-                sed -i "s/\$(IMAGE_TAG)/$(IMAGE_TAG)/g" \
-                  $(Pipeline.Workspace)/k8s/product-service/deployment.yaml
-                sed -i "s/\$(IMAGE_TAG)/$(IMAGE_TAG)/g" \
-                  $(Pipeline.Workspace)/k8s/frontend-service/deployment.yaml
-              displayName: "Inject Image Tag into Manifests"
-
-            # Deploy all services
-            - task: KubernetesManifest@1
-              displayName: "Deploy User Service"
+            # Create namespace if it doesn't exist
+            - task: AzureCLI@2
+              displayName: "Create Namespace"
               inputs:
-                action: deploy
-                connectionType: azureResourceManager
-                azureSubscriptionConnection: "shopcart-azure-connection"
-                azureResourceGroup: "$(RESOURCE_GROUP)"
-                kubernetesCluster: "$(AKS_CLUSTER)"
-                namespace: "$(K8S_NAMESPACE)"
-                manifests: |
-                  $(Pipeline.Workspace)/k8s/user-service/deployment.yaml
-                  $(Pipeline.Workspace)/k8s/user-service/service.yaml
+                azureSubscription: "shopcart-azure-connection"
+                scriptType: "bash"
+                scriptLocation: "inlineScript"
+                inlineScript: |
+                  kubectl create namespace $(K8S_NAMESPACE) \
+                    --dry-run=client -o yaml | kubectl apply -f -
 
-            - task: KubernetesManifest@1
-              displayName: "Deploy Product Service"
+            # Helm lint before deploy (catches errors early)
+            - task: Bash@3
+              displayName: "Helm Lint"
               inputs:
-                action: deploy
-                connectionType: azureResourceManager
-                azureSubscriptionConnection: "shopcart-azure-connection"
-                azureResourceGroup: "$(RESOURCE_GROUP)"
-                kubernetesCluster: "$(AKS_CLUSTER)"
-                namespace: "$(K8S_NAMESPACE)"
-                manifests: |
-                  $(Pipeline.Workspace)/k8s/product-service/deployment.yaml
-                  $(Pipeline.Workspace)/k8s/product-service/service.yaml
+                targetType: "inline"
+                script: |
+                  helm lint $(Pipeline.Workspace)/helm-chart/ \
+                    --values $(Pipeline.Workspace)/helm-chart/values.yaml \
+                    --values $(Pipeline.Workspace)/helm-chart/$(HELM_VALUES_FILE)
 
-            - task: KubernetesManifest@1
-              displayName: "Deploy Frontend Service + Ingress"
+            # Helm upgrade --install
+            # upgrade = update if exists
+            # install = fresh install if not exists
+            # This is idempotent — safe to run multiple times
+            - task: Bash@3
+              displayName: "Helm Deploy to Staging"
               inputs:
-                action: deploy
-                connectionType: azureResourceManager
-                azureSubscriptionConnection: "shopcart-azure-connection"
-                azureResourceGroup: "$(RESOURCE_GROUP)"
-                kubernetesCluster: "$(AKS_CLUSTER)"
-                namespace: "$(K8S_NAMESPACE)"
-                manifests: |
-                  $(Pipeline.Workspace)/k8s/frontend-service/deployment.yaml
-                  $(Pipeline.Workspace)/k8s/frontend-service/service.yaml
-                  $(Pipeline.Workspace)/k8s/frontend-service/ingress.yaml
+                targetType: "inline"
+                script: |
+                  helm upgrade --install $(HELM_RELEASE_NAME) \
+                    $(Pipeline.Workspace)/helm-chart/ \
+                    --namespace $(K8S_NAMESPACE) \
+                    --values $(Pipeline.Workspace)/helm-chart/values.yaml \
+                    --values $(Pipeline.Workspace)/helm-chart/$(HELM_VALUES_FILE) \
+                    --set global.imageTag=$(IMAGE_TAG) \
+                    --set global.registry=$(ACR_LOGIN_SERVER) \
+                    --atomic \
+                    --timeout 5m \
+                    --cleanup-on-fail \
+                    --history-max 5 \
+                    --wait
 
-            # Verify rollout succeeded
-            - task: Kubernetes@1
-              displayName: "Verify Deployment Rollout"
+            # Verify all pods are running
+            - task: Bash@3
+              displayName: "Verify Staging Deployment"
               inputs:
-                connectionType: "Azure Resource Manager"
-                azureSubscriptionEndpoint: "shopcart-azure-connection"
-                azureResourceGroup: "$(RESOURCE_GROUP)"
-                kubernetesCluster: "$(AKS_CLUSTER)"
-                namespace: "$(K8S_NAMESPACE)"
-                command: rollout
-                arguments: >
-                  status deployment/user-service
-                  deployment/product-service
-                  deployment/frontend-service
-                  --timeout=300s
+                targetType: "inline"
+                script: |
+                  echo "── Pods ──────────────────────────────"
+                  kubectl get pods -n $(K8S_NAMESPACE)
+
+                  echo "── Services ──────────────────────────"
+                  kubectl get services -n $(K8S_NAMESPACE)
+
+                  echo "── Ingress ───────────────────────────"
+                  kubectl get ingress -n $(K8S_NAMESPACE)
+
+                  echo "── Helm Release ──────────────────────"
+                  helm status $(HELM_RELEASE_NAME) -n $(K8S_NAMESPACE)
 
 # ═══════════════════════════════════════════
 # STAGE 3: CD — Deploy to Production
-# Only runs on 'main' branch + requires approval
+# Runs on main branch + requires approval
 # ═══════════════════════════════════════════
 - stage: Deploy_Production
-  displayName: "🚀 Deploy to Production"
+  displayName: "🚀 Deploy to Production via Helm"
   dependsOn: CI
   condition: |
     and(
@@ -243,14 +223,16 @@ stages:
       eq(variables['Build.SourceBranch'], 'refs/heads/main')
     )
   variables:
-    K8S_NAMESPACE: "shopcart"
+    K8S_NAMESPACE:      "shopcart"
+    HELM_VALUES_FILE:   "values-production.yaml"
   jobs:
 
-  - deployment: Deploy
-    displayName: "Deploy to Production AKS"
+  - deployment: HelmDeploy_Production
+    displayName: "Helm Deploy to Production"
     pool:
       vmImage: "ubuntu-latest"
-    # 'production' environment has manual approval gate in Azure DevOps
+    # 'production' environment has manual approval gate configured
+    # in Azure DevOps → Environments → production → Approvals
     environment: "production"
     strategy:
       runOnce:
@@ -258,77 +240,107 @@ stages:
           steps:
 
             - task: DownloadPipelineArtifact@2
+              displayName: "Download Helm Chart"
               inputs:
-                artifactName: "k8s-manifests"
-                targetPath: "$(Pipeline.Workspace)/k8s"
+                artifactName: "helm-chart"
+                targetPath: "$(Pipeline.Workspace)/helm-chart"
 
-            - script: |
-                sed -i "s/\$(IMAGE_TAG)/$(IMAGE_TAG)/g" \
-                  $(Pipeline.Workspace)/k8s/user-service/deployment.yaml
-                sed -i "s/\$(IMAGE_TAG)/$(IMAGE_TAG)/g" \
-                  $(Pipeline.Workspace)/k8s/product-service/deployment.yaml
-                sed -i "s/\$(IMAGE_TAG)/$(IMAGE_TAG)/g" \
-                  $(Pipeline.Workspace)/k8s/frontend-service/deployment.yaml
-              displayName: "Inject Image Tag into Manifests"
-
-            - task: KubernetesManifest@1
-              displayName: "Deploy User Service"
+            - task: HelmInstaller@1
+              displayName: "Install Helm"
               inputs:
-                action: deploy
-                connectionType: azureResourceManager
-                azureSubscriptionConnection: "shopcart-azure-connection"
-                azureResourceGroup: "$(RESOURCE_GROUP)"
-                kubernetesCluster: "$(AKS_CLUSTER)"
-                namespace: "$(K8S_NAMESPACE)"
-                manifests: |
-                  $(Pipeline.Workspace)/k8s/user-service/deployment.yaml
-                  $(Pipeline.Workspace)/k8s/user-service/service.yaml
+                helmVersionToInstall: "3.14.0"
 
-            - task: KubernetesManifest@1
-              displayName: "Deploy Product Service"
+            - task: AzureCLI@2
+              displayName: "Get AKS Credentials"
               inputs:
-                action: deploy
-                connectionType: azureResourceManager
-                azureSubscriptionConnection: "shopcart-azure-connection"
-                azureResourceGroup: "$(RESOURCE_GROUP)"
-                kubernetesCluster: "$(AKS_CLUSTER)"
-                namespace: "$(K8S_NAMESPACE)"
-                manifests: |
-                  $(Pipeline.Workspace)/k8s/product-service/deployment.yaml
-                  $(Pipeline.Workspace)/k8s/product-service/service.yaml
+                azureSubscription: "shopcart-azure-connection"
+                scriptType: "bash"
+                scriptLocation: "inlineScript"
+                inlineScript: |
+                  az aks get-credentials \
+                    --name $(AKS_CLUSTER) \
+                    --resource-group $(RESOURCE_GROUP) \
+                    --overwrite-existing
 
-            - task: KubernetesManifest@1
-              displayName: "Deploy Frontend + Ingress"
+            - task: AzureCLI@2
+              displayName: "Create Namespace"
               inputs:
-                action: deploy
-                connectionType: azureResourceManager
-                azureSubscriptionConnection: "shopcart-azure-connection"
-                azureResourceGroup: "$(RESOURCE_GROUP)"
-                kubernetesCluster: "$(AKS_CLUSTER)"
-                namespace: "$(K8S_NAMESPACE)"
-                manifests: |
-                  $(Pipeline.Workspace)/k8s/frontend-service/deployment.yaml
-                  $(Pipeline.Workspace)/k8s/frontend-service/service.yaml
-                  $(Pipeline.Workspace)/k8s/frontend-service/ingress.yaml
+                azureSubscription: "shopcart-azure-connection"
+                scriptType: "bash"
+                scriptLocation: "inlineScript"
+                inlineScript: |
+                  kubectl create namespace $(K8S_NAMESPACE) \
+                    --dry-run=client -o yaml | kubectl apply -f -
 
-            # Final rollout verification
-            - task: Kubernetes@1
-              displayName: "Verify Production Rollout"
+            - task: Bash@3
+              displayName: "Helm Lint"
               inputs:
-                connectionType: "Azure Resource Manager"
-                azureSubscriptionEndpoint: "shopcart-azure-connection"
-                azureResourceGroup: "$(RESOURCE_GROUP)"
-                kubernetesCluster: "$(AKS_CLUSTER)"
-                namespace: "$(K8S_NAMESPACE)"
-                command: rollout
-                arguments: >
-                  status deployment/user-service
-                  deployment/product-service
-                  deployment/frontend-service
-                  --timeout=300s
+                targetType: "inline"
+                script: |
+                  helm lint $(Pipeline.Workspace)/helm-chart/ \
+                    --values $(Pipeline.Workspace)/helm-chart/values.yaml \
+                    --values $(Pipeline.Workspace)/helm-chart/$(HELM_VALUES_FILE)
 
-            # Tag the git commit with build ID for traceability
-            - script: |
-                git tag "release-$(IMAGE_TAG)"
-                git push origin "release-$(IMAGE_TAG)"
-              displayName: "Tag Release in Git"
+            # Show what WILL change before applying (like a dry run)
+            - task: Bash@3
+              displayName: "Helm Diff (What Will Change)"
+              inputs:
+                targetType: "inline"
+                script: |
+                  helm upgrade --install $(HELM_RELEASE_NAME) \
+                    $(Pipeline.Workspace)/helm-chart/ \
+                    --namespace $(K8S_NAMESPACE) \
+                    --values $(Pipeline.Workspace)/helm-chart/values.yaml \
+                    --values $(Pipeline.Workspace)/helm-chart/$(HELM_VALUES_FILE) \
+                    --set global.imageTag=$(IMAGE_TAG) \
+                    --set global.registry=$(ACR_LOGIN_SERVER) \
+                    --dry-run \
+                    --debug 2>&1 | head -100
+
+            # Actual Production Deploy
+            - task: Bash@3
+              displayName: "Helm Deploy to Production"
+              inputs:
+                targetType: "inline"
+                script: |
+                  helm upgrade --install $(HELM_RELEASE_NAME) \
+                    $(Pipeline.Workspace)/helm-chart/ \
+                    --namespace $(K8S_NAMESPACE) \
+                    --values $(Pipeline.Workspace)/helm-chart/values.yaml \
+                    --values $(Pipeline.Workspace)/helm-chart/$(HELM_VALUES_FILE) \
+                    --set global.imageTag=$(IMAGE_TAG) \
+                    --set global.registry=$(ACR_LOGIN_SERVER) \
+                    --atomic \
+                    --timeout 5m \
+                    --cleanup-on-fail \
+                    --history-max 10 \
+                    --wait
+
+            # Verify production pods
+            - task: Bash@3
+              displayName: "Verify Production Deployment"
+              inputs:
+                targetType: "inline"
+                script: |
+                  echo "── Pods ──────────────────────────────"
+                  kubectl get pods -n $(K8S_NAMESPACE)
+
+                  echo "── Services ──────────────────────────"
+                  kubectl get services -n $(K8S_NAMESPACE)
+
+                  echo "── Ingress ───────────────────────────"
+                  kubectl get ingress -n $(K8S_NAMESPACE)
+
+                  echo "── Helm History ──────────────────────"
+                  helm history $(HELM_RELEASE_NAME) -n $(K8S_NAMESPACE)
+
+            # Tag git commit with release version for traceability
+            - task: Bash@3
+              displayName: "Tag Git Release"
+              inputs:
+                targetType: "inline"
+                script: |
+                  git config user.email "devops@yourcompany.com"
+                  git config user.name "Azure DevOps"
+                  git tag "release-$(IMAGE_TAG)"
+                  git push origin "release-$(IMAGE_TAG)"

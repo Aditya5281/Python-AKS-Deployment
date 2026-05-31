@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Values.productService.name }}
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: {{ .Values.productService.name }}
+    {{ include "shopcart.labels" . | nindent 4 }}
+spec:
+  selector:
+    app: {{ .Values.productService.name }}
+  ports:
+    - name: http
+      protocol: TCP
+      port: {{ .Values.productService.port }}
+      targetPort: {{ .Values.productService.port }}
+  type: ClusterIP

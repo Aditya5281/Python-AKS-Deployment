@@ -1,0 +1,14 @@
+apiVersion: v2
+name: shopcart
+description: ShopCart microservices application
+type: application
+version: 1.0.0          # Chart version — bump when chart structure changes
+appVersion: "1.0.0"     # App version — informational only
+keywords:
+  - shopcart
+  - microservices
+  - python
+  - flask
+maintainers:
+  - name: Your Team Name
+    email: team@yourcompany.com
