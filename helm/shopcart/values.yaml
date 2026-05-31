@@ -112,4 +112,4 @@ ingress:
   connectionDrainingTimeout: "30"
   cookieAffinity: "true"
   requestTimeout: "60"
-  wafPolicyId: "/subscriptions/YOUR_SUB_ID/resourceGroups/shopcart-rg/providers/Microsoft.Network/applicationGatewayWebApplicationFirewallPolicies/shopcart-waf-policy"
+ 
