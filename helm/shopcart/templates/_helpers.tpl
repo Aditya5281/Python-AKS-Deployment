@@ -1,18 +1,19 @@
 {{/*
-  Expand the full image name:
-  Usage: {{ include "shopcart.image" (dict "registry" .Values.global.registry "repo" .Values.userService.image.repository "tag" .Values.global.imageTag) }}
+  Builds full image URL:
+  shopcartacr.azurecr.io/user-service:42
+
+  Called like:
+  {{ include "shopcart.image" (dict "root" . "repo" .Values.userService.image.repository) }}
 */}}
 {{- define "shopcart.image" -}}
-{{- printf "%s/%s:%s" .registry .repo .tag -}}
-{{- end }}
-
-{{/*
-  Common labels applied to all resources
-*/}}
-{{- define "shopcart.labels" -}}
-app.kubernetes.io/managed-by: Helm
-app.kubernetes.io/instance: {{ .Release.Name }}
-app.kubernetes.io/version: {{ .Chart.AppVersion }}
-environment: {{ .Values.global.environment }}
-helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version }}
+{{- $registry := .root.Values.global.registry -}}
+{{- $tag      := .root.Values.global.imageTag -}}
+{{- $repo     := .repo -}}
+{{- if not $registry -}}
+  {{- fail "global.registry must be set. Pass --set global.registry=<ACR_URL> from pipeline." -}}
+{{- end -}}
+{{- if not $tag -}}
+  {{- fail "global.imageTag must be set. Pass --set global.imageTag=<BUILD_ID> from pipeline." -}}
+{{- end -}}
+{{- printf "%s/%s:%s" $registry $repo $tag -}}
 {{- end }}

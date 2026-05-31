@@ -2,8 +2,8 @@
 # Global values shared across all services
 # ─────────────────────────────────────────────
 global:
-  registry: "shopcartacr.azurecr.io"   # ACR login server
-  imageTag: "latest"                    # overridden by pipeline with BUILD ID
+  registry: ""   
+  imageTag: ""                    
   namespace: "shopcart"
   environment: "production"
 

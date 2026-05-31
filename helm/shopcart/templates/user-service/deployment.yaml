@@ -28,7 +28,7 @@ spec:
         fsGroup: 2000
       containers:
         - name: {{ .Values.userService.name }}
-          image: {{ include "shopcart.image" (dict "registry" .Values.global.registry "repo" .Values.userService.image.repository "tag" .Values.global.imageTag) }}
+          image: {{ include "shopcart.image" (dict "root" . "repo" .Values.userService.image.repository) }}
           imagePullPolicy: {{ .Values.userService.image.pullPolicy }}
           ports:
             - containerPort: {{ .Values.userService.port }}
