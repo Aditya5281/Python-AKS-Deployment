@@ -14,7 +14,7 @@ trigger:
       - README.md
       - docs/**
 
-pr:
+pr: 
   branches:
     include:
       - main
